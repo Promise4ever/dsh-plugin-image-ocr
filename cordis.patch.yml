@@ -1,0 +1,6 @@
+- insert:
+    - id: dsh-plugin-image-ocr
+      name: dsh-plugin-image-ocr
+      config:
+        mode: screen
+        hintOnReadImage: true

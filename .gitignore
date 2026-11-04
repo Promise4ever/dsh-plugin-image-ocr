@@ -1,0 +1,12 @@
+node_modules/
+.ci-host/
+SHA256SUMS.txt
+*.tgz
+.env
+.env.*
+*token*.txt
+*credential*
+ocr-cache/
+coverage/
+.DS_Store
+*.private.*

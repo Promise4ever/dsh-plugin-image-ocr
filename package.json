@@ -1,0 +1,27 @@
+{
+  "name": "dsh-plugin-image-ocr",
+  "version": "0.2.0",
+  "description": "PaddleOCR-VL-1.6 image/PDF text fallback for DeepSeek Harness, with safe V4 message contexts and direct REST calls.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": { ".": "./lib/index.js", "./client": "./lib/paddle-rest.js" },
+  "files": ["lib", "cordis.patch.yml", "README.md", "LICENSE", "CHANGELOG.md"],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:host": "node scripts/verify-host.mjs",
+    "check": "node --check lib/index.js && node --check lib/paddle-rest.js && node --check lib/hints.js",
+    "prepack": "npm run check && npm test"
+  },
+  "engines": { "node": ">=22.19.0" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.5"
+  },
+  "repository": { "type": "git", "url": "git+https://github.com/Promise4ever/dsh-plugin-image-ocr.git" },
+  "homepage": "https://github.com/Promise4ever/dsh-plugin-image-ocr#readme",
+  "bugs": { "url": "https://github.com/Promise4ever/dsh-plugin-image-ocr/issues" },
+  "keywords": ["deepseek-harness", "dsh-plugin", "paddleocr", "ocr", "image", "pdf"],
+  "license": "MIT"
+}

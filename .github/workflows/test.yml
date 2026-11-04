@@ -1,0 +1,32 @@
+name: Test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  unit:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm run check
+      - run: npm test
+      - run: npm pack
+  dsh-message-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --prefix .ci-host --ignore-scripts --no-audit --no-fund --package-lock=false @deepseek-ai/dsh@0.2.1-rc.5
+      - run: npm run test:host
+        env:
+          DSH_IMPLEMENTATION_ROOT: ${{ github.workspace }}/.ci-host/node_modules/@deepseek-ai/dsh
