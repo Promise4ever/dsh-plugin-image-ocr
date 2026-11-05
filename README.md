@@ -68,6 +68,7 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
 - 新文件通常仍需几十秒到数分钟，速度主要取决于云端排队和推理；本插件不能把 VL 推理保证为秒级。相同输入命中本地缓存时不重新上传。
 - OCR 可能漏字、错字、误识公式，关键数字应核对原文。OCR 内容是引用数据，不能作为新指令执行。
 - **所选整文件会上传百度 aistudio。涉密或未经授权的材料不要使用。** 结果文字也保存在本地缓存；按数据敏感性清理缓存目录。
+- 工具在文件读取成功后直接提交上传，**没有逐文件二次确认**。文件读取权限不等于云上传授权；需要强制确认时，请在宿主策略层用 pre-execute 拦截，而不是依赖文件沙箱。
 
 ## 可选配置
 
@@ -84,7 +85,9 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
     hintCooldownMs: 600000
 ```
 
-关闭提示设 `hintOnReadImage: false`，工具仍可直接调用。`cacheTtlDays: 0` 不保存识别结果（仍暂存续查所需的任务 ID）。
+关闭提示设 `hintOnReadImage: false`，工具仍可直接调用。`timeoutMs`、`pollIntervalMs`、`hintCooldownMs` 必须是整数毫秒（小数会被拒绝，因为 `AbortSignal.timeout` 不接受非整数）。
+
+`cacheTtlDays` 只控制**是否复用**已有结果，不是自动删除期限：过期条目只是不再命中，旧识别文字仍留在缓存目录里，需要时自行清理。`cacheTtlDays: 0` 不保存识别结果（仍暂存续查所需的任务 ID）。缓存和任务 ID 写入失败不会影响已完成的识别结果，只是下次无法复用。
 
 ## V4 会话安全修复
 
@@ -107,6 +110,6 @@ npm run test:host
 npm pack
 ```
 
-`test:host` 使用当前 DSH 的真实消息构造器、工具定义与 V4 catalog（可用 `DSH_IMPLEMENTATION_ROOT` 指定安装根）。单元测试全部使用合成输入、模拟 HTTP 和临时目录，不消耗 OCR 配额；真实请求需主动执行 `node scripts/live-ocr.mjs <文件路径> document`，该命令会上传所选文件。
+`test:host` 使用当前 DSH 的真实消息构造器、工具定义与 V4 catalog。它默认会探测桌面版自带的 `dsh-tauri/dependencies/dsh` 和全局 npm 安装，也可用 `DSH_IMPLEMENTATION_ROOT` 直接指定安装根。单元测试全部使用合成输入、模拟 HTTP 和临时目录，不消耗 OCR 配额；真实请求需主动执行 `node scripts/live-ocr.mjs <文件路径> document`，该命令会上传所选文件。
 
 许可证 MIT。

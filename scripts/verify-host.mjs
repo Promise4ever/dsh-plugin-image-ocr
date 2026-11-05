@@ -37,6 +37,12 @@ function locateHost() {
     if (host) return host;
     throw new Error('DSH_IMPLEMENTATION_ROOT does not resolve all required installed host packages.');
   }
+  const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  // The desktop shell vendors DSH under its own dependencies directory, outside npm's global root.
+  for (const name of ['dsh-tauri', 'dsh-desktop', 'dsh']) {
+    const host = inspectHostRoot(path.join(appData, name, 'dependencies', 'dsh'));
+    if (host) return host;
+  }
   const npmAnchors = [
     fileURLToPath(import.meta.url), process.env.npm_execpath,
     path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'),
@@ -51,9 +57,9 @@ function locateHost() {
       if (host) return host;
     } catch { /* A global npm CLI may live outside this Node installation. */ }
   }
-  const host = inspectHostRoot(path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm', 'node_modules', '@deepseek-ai', 'dsh'));
+  const host = inspectHostRoot(path.join(appData, 'npm', 'node_modules', '@deepseek-ai', 'dsh'));
   if (host) return host;
-  throw new Error('Installed DSH not found. Set DSH_IMPLEMENTATION_ROOT; no dependencies are installed by this script.');
+  throw new Error('Installed DSH not found (checked the desktop app dependencies and global npm). Set DSH_IMPLEMENTATION_ROOT; no dependencies are installed by this script.');
 }
 
 const host = locateHost();

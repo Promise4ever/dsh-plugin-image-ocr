@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1
+
+- Local cache/checkpoint failures are now advisory: a read-only or full cache no longer fails an OCR that already succeeded, and a failed checkpoint write no longer forces a duplicate cloud submission.
+- Saved jobs rejected with HTTP 404/410 are discarded and submitted once more instead of wedging every later retry.
+- A call cancelled while waiting in the queue releases its upload buffer immediately and never submits.
+- Cache hits no longer wait behind a running job: validation, credential lookup and cache lookup run before the submission queue.
+- Response streams that error or close early are normalized to a retriable `NETWORK_ERROR`, so mid-body drops are retried like connection failures.
+- `timeoutMs`, `pollIntervalMs` and `hintCooldownMs` must be whole milliseconds; fractional values are rejected instead of failing at `AbortSignal.timeout`.
+- `npm run test:host` finds the desktop app's vendored DSH installation without `DSH_IMPLEMENTATION_ROOT`.
+- Document cache TTL semantics (reuse window, not retention) and the absence of a per-file upload confirmation.
+
 ## 0.2.0
 
 - Rebuild the standalone PaddleOCR-VL-1.6 REST plugin as a distributable DSH bundle.

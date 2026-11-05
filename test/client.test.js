@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createClient, resolveToken, normalizePageRanges, mediaType, buildMultipart, cacheKey,
-  parseResults, validateResultUrl, MODEL } from '../lib/paddle-rest.js';
+  parseResults, validateResultUrl, normalizeTransportError, OcrError, MODEL } from '../lib/paddle-rest.js';
 const PNG = Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0]);
 const TOKEN = 'synthetic-test-credential';
 const row = text => JSON.stringify({ result: { layoutParsingResults: [{ markdown: { text, images: { unused: 'https://never.invalid/image.png' } } }] } });
@@ -187,4 +187,93 @@ test('invalid modes, unsupported content and oversized input never submit', asyn
   await assert.rejects(client.run(Buffer.from('not image')), { code: 'UNSUPPORTED_FILE' });
   await assert.rejects(client.run(Buffer.alloc(25 * 1024 * 1024 + 1)), { code: 'UPLOAD_SIZE' });
   assert.equal(calls.length, 0);
+});
+test('a saved job the service no longer knows is discarded and resubmitted once', async t => {
+  const key = cacheKey(PNG, { mode: 'screen', pageRanges: '', token: TOKEN });
+  let posts = 0;
+  const f = await fixture(t, { send: async (url, req) => {
+    if (req.method === 'POST') { posts++; return { status: 200, text: `{"data":{"jobId":"fresh-job-${posts}"}}` }; }
+    if (url === resultUrl) return { status: 200, text: row('recovered') };
+    if (url.endsWith('/stale-job')) return { status: 404, text: '{"code":1404,"msg":"no such job"}' };
+    return { status: 200, text: JSON.stringify({ data: { state: 'done', resultUrl: { jsonUrl: resultUrl } } }) };
+  } });
+  await fs.writeFile(path.join(f.config.cacheDir, `${key}.job.json`), JSON.stringify({ jobId: 'stale-job', savedAt: 1000000 }));
+  const result = await f.client.run(PNG);
+  assert.equal(result.text, 'recovered');
+  assert.equal(posts, 1);
+  assert.deepEqual(await fs.readdir(f.config.cacheDir), [`${key}.json`]);
+});
+test('local cache and checkpoint failures never hide a finished OCR result', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-ocr-blocked-cache-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const blocker = path.join(root, 'blocker');
+  await fs.writeFile(blocker, 'a regular file where the cache directory should be');
+  let posts = 0;
+  const f = await fixture(t, { config: { cacheDir: path.join(blocker, 'cache') }, send: async (url, req) => {
+    if (req.method === 'POST') { posts++; return { status: 200, text: '{"data":{"jobId":"persist-job"}}' }; }
+    if (url === resultUrl) return { status: 200, text: row('persisted anyway') };
+    return { status: 200, text: JSON.stringify({ data: { state: 'done', resultUrl: { jsonUrl: resultUrl } } }) };
+  } });
+  assert.equal((await f.client.run(PNG)).text, 'persisted anyway');
+  assert.equal(posts, 1);
+});
+test('cancelling a waiting call never submits and leaves the running call intact', async t => {
+  let releaseFirst;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  let posts = 0;
+  const f = await fixture(t, { send: async (url, req) => {
+    if (req.method === 'POST') { posts++; return { status: 200, text: `{"data":{"jobId":"job-${posts}"}}` }; }
+    if (url === resultUrl) return { status: 200, text: row('finished') };
+    if (posts === 1) await firstGate;
+    return { status: 200, text: JSON.stringify({ data: { state: 'done', resultUrl: { jsonUrl: resultUrl } } }) };
+  } });
+  const first = f.client.run(PNG);
+  await new Promise(resolve => setImmediate(resolve));
+  const controller = new AbortController();
+  const second = f.client.run(Buffer.concat([PNG, Buffer.from([7])]), { signal: controller.signal });
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort(new Error('cancelled'));
+  await assert.rejects(second, /cancelled/);
+  releaseFirst();
+  assert.equal((await first).text, 'finished');
+  assert.equal(posts, 1);
+});
+test('a cached result returns while another job is still running', async t => {
+  let releaseSlow;
+  const slowGate = new Promise(resolve => { releaseSlow = resolve; });
+  let posts = 0;
+  const f = await fixture(t, { send: async (url, req) => {
+    if (req.method === 'POST') { posts++; return { status: 200, text: `{"data":{"jobId":"job-${posts}"}}` }; }
+    if (url === resultUrl) return { status: 200, text: row('cached page') };
+    if (posts > 1) await slowGate;
+    return { status: 200, text: JSON.stringify({ data: { state: 'done', resultUrl: { jsonUrl: resultUrl } } }) };
+  } });
+  assert.equal((await f.client.run(PNG)).cached, false);
+  const slow = f.client.run(Buffer.concat([PNG, Buffer.from([9])]));
+  await new Promise(resolve => setImmediate(resolve));
+  const cached = await Promise.race([f.client.run(PNG),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('cache lookup waited for the queue')), 500))]);
+  assert.equal(cached.cached, true);
+  releaseSlow();
+  assert.equal((await slow).text, 'cached page');
+});
+test('a dropped GET connection is retried instead of failing the call', async t => {
+  let gets = 0;
+  const f = await fixture(t, { send: async (url, req) => {
+    if (req.method === 'POST') return { status: 200, text: '{"data":{"jobId":"retry-get"}}' };
+    if (url === resultUrl) return { status: 200, text: row('retried get') };
+    gets++;
+    if (gets === 1) throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    return { status: 200, text: JSON.stringify({ data: { state: 'done', resultUrl: { jsonUrl: resultUrl } } }) };
+  } });
+  assert.equal((await f.client.run(PNG)).text, 'retried get');
+  assert.equal(gets, 2);
+});
+test('transport failures normalize to a stable retriable code', () => {
+  const dropped = normalizeTransportError(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }));
+  assert.equal(dropped.code, 'NETWORK_ERROR');
+  assert.match(dropped.message, /ECONNRESET/);
+  assert.equal(normalizeTransportError(new OcrError('rejected', 'AUTH_FAILED')).code, 'AUTH_FAILED');
+  const controller = new AbortController(); controller.abort(new Error('cancelled'));
+  assert.match(normalizeTransportError(new Error('ignored'), controller.signal).message, /cancelled/);
 });
