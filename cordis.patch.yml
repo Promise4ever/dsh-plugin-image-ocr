@@ -1,6 +1,15 @@
+# dsh-plugin-image-ocr bundle patch
+#
+# `dsh.bundle.patch` layer. Installing this package appends it to
+# `dsh.profile.bundles`, and profile boot merges this patch as one plugin row.
+#
+# The row id is the settings namespace: the browser settings page binds
+# `ctx.configForms.get('dsh-plugin-image-ocr')`. Renaming it orphans persisted
+# configuration, so keep it stable across versions.
 - insert:
     - id: dsh-plugin-image-ocr
       name: dsh-plugin-image-ocr
       config:
+        model: PaddleOCR-VL-1.6
         mode: screen
         hintOnReadImage: true

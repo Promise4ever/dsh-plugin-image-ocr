@@ -30,15 +30,27 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
 
 将 `tauri` 换为实际 profile；不要盲目安装进另一个 `web` profile。全局 CLI 不接受 Desktop carrier 专用的 `desktop` profile，Desktop 用户请用应用内安装入口。
 
+## 设置页（0.3.0+）
+
+插件会在 DSH 的「设置」面板里注册一个「图片文字识别」页面，不需要手工编辑 YAML：
+
+- **aistudio Access Token**：页面内给出获取步骤与入口（<https://aistudio.baidu.com/paddleocr/task> → 登录 → 「API 调用示例」复制 access token），输入框是只写字段，保存到 DSH 本机凭据库（`$DSH_HOME/.credentials.yaml`，引用名 `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`），**不写进 profile 配置、不回显到页面**。可随时移除；环境变量与凭据文件仍作为后备。
+- **识别模型**：`PaddleOCR-VL-1.6`（文档/版面/表格/公式，默认）或 `PP-OCRv6`（轻量小模型，只输出文字行，速度快、无版面结构）。
+- **识别与格式**：默认识别场景（screen / document / raw）、结果格式（Markdown / 纯文本），以及方向矫正、扭曲矫正、版面分析、图表识别、印章识别、文本行方向矫正等格式开关（自动 / 开 / 关；自动跟随场景预设，模型不适用的开关不会下发）。
+- **性能、缓存与提示**：结果缓存天数、总超时、轮询间隔、读图后提示模型及其冷却时间、可选的凭据文件路径。
+
+除 token 外的设置写入当前 profile 的 `cordis.patch.yml`；这些字段都声明为 volatile，保存后**下一次 OCR 调用立即生效**，无需重启宿主。token 通过凭据库单独保存，两者都不会把机密值带进设置文档。
+
 ## 本地凭据
 
 凭据仅从本机读取，不随插件分发，不要粘贴到聊天或提交到 GitHub。查找顺序：
 
-1. 插件配置 `token`（不推荐明文写进可同步配置）。
-2. 非空环境变量 `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`、`AISTUDIO_ACCESS_TOKEN`、`PADDLEOCR_AISTUDIO_TOKEN`。
-3. `$DSH_HOME/ocr-token.txt`；未设置 `DSH_HOME` 时为 `~/.dsh/ocr-token.txt`。文件内容为一行有效 aistudio 凭据。
+1. DSH 凭据库中的 `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN` 引用（设置页保存的位置；存储值优先于启动环境）。
+2. 插件配置 `token`（旧方式，不推荐明文写进可同步配置）。
+3. 非空环境变量 `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`、`AISTUDIO_ACCESS_TOKEN`、`PADDLEOCR_AISTUDIO_TOKEN`。
+4. `$DSH_HOME/ocr-token.txt`；未设置 `DSH_HOME` 时为 `~/.dsh/ocr-token.txt`。文件内容为一行有效 aistudio 凭据。
 
-不再扫描或依赖 MCP 配置。设置环境变量后需重新启动宿主；凭据文件在调用时读取。可通过管理员配置 `tokenFile` 指向其他绝对路径。文件以本机权限保护，勿放进公共目录；POSIX 上可设为 `0600`，Windows 上需检查 NTFS ACL，POSIX mode 不等同于 Windows ACL。
+凭据在每次调用时重新解析，轮换后无需重启。不再扫描或依赖 MCP 配置。可通过管理员配置 `tokenFile` 指向其他绝对路径。文件以本机权限保护，勿放进公共目录；POSIX 上可设为 `0600`，Windows 上需检查 NTFS ACL，POSIX mode 不等同于 Windows ACL。
 
 ## 使用
 
@@ -51,7 +63,8 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
 参数：
 
 - `image`：本地图片或 PDF 的绝对路径，或相对于当前会话工作目录的路径。不能传 `attachmentId`，也不接受任意 URL。
-- `mode`：`screen`（默认，截图/UI/聊天记录，关闭版面切块）、`document`（扫描页、多栏、PDF，开启版面分析）、`raw`（服务端默认）。模型固定为 `PaddleOCR-VL-1.6`。
+- `mode`：`screen`（默认，截图/UI/聊天记录，关闭版面切块）、`document`（扫描页、多栏、PDF，开启版面分析）、`raw`（服务端默认）。未显式传 `mode` 时使用设置页里的「默认识别场景」。
+- 模型由设置页决定：默认 `PaddleOCR-VL-1.6`（Markdown 版面解析），可切换 `PP-OCRv6`（轻量小模型，返回文字行）。设置页还可调整结果格式（Markdown/纯文本）与各项格式矫正开关。
 - `pageRanges`：可选 PDF 页码，例如 `1-3,5`，从 1 开始。仅选择页码不会改变整文件上传这一事实。
 - `refresh`：`true` 跳过本地结果缓存与已保存任务，重新提交；不保证绕过云服务内部缓存。
 
@@ -77,13 +90,24 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
 ```yaml
 - id: dsh-plugin-image-ocr
   config:
+    model: PaddleOCR-VL-1.6   # 或 PP-OCRv6（轻量小模型）
     mode: screen
+    outputFormat: markdown    # 或 text
+    orientationClassify: auto # auto / on / off
+    docUnwarping: auto
+    textlineOrientation: auto # 仅 PP-OCR 模型
+    layoutDetection: auto     # 仅 VL 模型
+    chartRecognition: auto    # 仅 VL 模型
+    sealRecognition: auto     # 仅 VL 模型
     timeoutMs: 300000
     pollIntervalMs: 2000
     cacheTtlDays: 30
     hintOnReadImage: true
     hintCooldownMs: 600000
+    tokenFile: ''
 ```
+
+以上字段都声明为 volatile：设置页保存后立即生效，无需重启。格式开关的 `auto` 跟随 `mode` 预设，`on`/`off` 手动覆盖；模型不适用的开关（如 VL 模型下的 `textlineOrientation`）不会下发，避免服务端报错。
 
 关闭提示设 `hintOnReadImage: false`，工具仍可直接调用。`timeoutMs`、`pollIntervalMs`、`hintCooldownMs` 必须是整数毫秒（小数会被拒绝，因为 `AbortSignal.timeout` 不接受非整数）。
 
@@ -101,7 +125,7 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
 
 ## 开发与验证
 
-运行环境 Node.js >=22.19.0；宿主集成验证针对 DSH 0.2.1-rc.5。运行产物直接位于 `lib/`，无需 prepare/build，也没有安装时下载模型或执行程序的脚本。
+运行环境 Node.js >=22.19.0；宿主集成验证针对 DSH 0.2.x（含 0.2.2-rc.1）。运行产物直接位于 `lib/`（宿主半侧）与 `client.js`（浏览器设置页），无需 prepare/build，也没有安装时下载模型或执行程序的脚本。设置页依赖 DSH 的 `settings.section` slot、`configForms` 服务与凭据服务（`dsh-credentials`）；缺失时插件工具照常工作，只是设置页不出现。
 
 ```sh
 npm run check

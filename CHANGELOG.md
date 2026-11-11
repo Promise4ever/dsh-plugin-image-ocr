@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0
+
+- Add a browser-half settings page registered into the DSH settings panel ("图片文字识别"):
+  aistudio access-token acquisition steps and a write-only token input, model choice,
+  recognition-format switches, result format, cache/timeout and hint options.
+- Store the token in the harness credential store (`PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`)
+  through `remote.credentials`; the token never enters profile config or the describe wire,
+  and stored values outrank the launch environment.
+- Add a schemastery `Config` export with volatile fields for every setting, so saves apply to
+  the next OCR call without a host restart; adopt `settings.configure({ auto: false })` so the
+  generated form does not duplicate the dedicated page.
+- Built-in model choice: `PaddleOCR-VL-1.6` (default, layout/Markdown parsing) and
+  `PP-OCRv6` (lightweight 50-language OCR pipeline, first-class small model). PP-OCR
+  `ocrResults` payloads are parsed into text pages; VL `layoutParsingResults` keep working.
+- Recognition-format settings: default mode, output format (markdown/text), and tri-state
+  document-orientation, unwarping, layout, chart, seal and text-line-orientation switches
+  (`auto` follows the mode preset; model-inapplicable switches are never sent).
+- Cache keys isolate model, result format and format switches; cache version bumped.
+- Read live config on every run (volatile references are unwrapped), including the deadline,
+  polling interval, cache TTL and hint options; tool timeout itself is now a host ceiling.
+
 ## 0.2.1
 
 - Local cache/checkpoint failures are now advisory: a read-only or full cache no longer fails an OCR that already succeeded, and a failed checkpoint write no longer forces a duplicate cloud submission.

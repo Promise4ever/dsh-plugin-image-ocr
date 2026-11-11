@@ -372,7 +372,9 @@ try {
     assert.equal(tool.parameters.properties.pageRanges.type, 'string');
     assert.equal(tool.parameters.properties.refresh.type, 'boolean');
     assert.equal(tool.output.schema.type, 'string');
-    assert.equal(tool.timeoutMs, 300000);
+    // The host ceiling keeps a wedged call bounded; the configurable deadline is enforced
+    // inside the OCR client on every run, so settings changes take effect without a remount.
+    assert.equal(tool.timeoutMs, 3600000);
     assert.notEqual(tool.isConcurrencySafe?.({ image: 'synthetic.png' }), true);
     const value = 'Synthetic OCR result, with no upload.';
     assert.deepEqual(tools.validateJsonSchemaValue(tool.output.schema, value, ''), []);
@@ -428,7 +430,8 @@ try {
 
   await check('registered post-execute hook respects config and emits real host messages', async () => {
     const enabled = capturePlugin({ hintCooldownMs: 0, timeoutMs: 2500 });
-    assert.equal(enabled.tool.timeoutMs, 2500);
+    // Same ceiling rationale as above: the per-run config deadline lives in the client.
+    assert.equal(enabled.tool.timeoutMs, 3600000);
     const agent = {};
     for (let index = 0; index < 2; index++) assert.equal((await invoke(enabled.hook, { agent })).answer.additionalContexts.length, 1);
     const disabled = capturePlugin({ hintOnReadImage: false });
