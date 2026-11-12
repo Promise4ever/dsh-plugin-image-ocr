@@ -1,6 +1,8 @@
 # dsh-plugin-image-ocr
 
-给 DeepSeek Harness (DSH) 增加 `read_image_text` 工具。当模型看不清图片中的文字、数字、公式或表格时，调用 PaddleOCR-VL-1.6 取得 Markdown，再据此回答。
+给 DeepSeek Harness (DSH) 增加 `read_image_text` 工具。当模型看不清图片中的文字、数字、公式或表格时，调用云端 PaddleOCR 识别，再据此回答。支持 PaddleOCR-VL-1.6 文档解析和 PP-OCRv6 轻量文字识别，可在设置页选择。
+
+当前版本 **0.4.0**，包含「图片文字识别」设置页、Token 配置、模型选择和自动识别场景。
 
 纯 Node.js，直连百度 aistudio REST；不需要 PaddleOCR MCP、Python 或本地模型。删除 MCP 配置不会影响本插件。
 
@@ -9,10 +11,12 @@
 在 DSH「插件」页的安装输入框粘贴这个 **GitHub Release 安装包网址**：
 
 ```text
-https://github.com/Promise4ever/dsh-plugin-image-ocr/releases/download/v0.2.0/dsh-plugin-image-ocr-0.2.0.tgz
+https://github.com/Promise4ever/dsh-plugin-image-ocr/releases/download/v0.4.0/dsh-plugin-image-ocr-0.4.0.tgz
 ```
 
 完成安装后点击 **立即启用**。若 DSH 提示需要重启，请完整退出并重新打开 DSH；仅刷新浏览器不能替代宿主重启。
+
+**从 0.2.x 升级**：在当前实际使用的 profile 中，用上面的 0.4.0 安装包地址重新安装/升级。GitHub 发布新版本不会自动更新本机已安装的插件，也不会更新另一个测试 profile。启用新版后，从 **DSH 设置 → 图片文字识别** 进入设置页；该入口不在插件详情的通用设置中。若入口仍未出现，先确认已安装版本为 0.4.0，并按宿主提示重新启用或重启。
 
 也支持输入仓库网址（仓库内已包含运行用 JavaScript，无需构建）：
 
@@ -20,12 +24,12 @@ https://github.com/Promise4ever/dsh-plugin-image-ocr/releases/download/v0.2.0/ds
 https://github.com/Promise4ever/dsh-plugin-image-ocr
 ```
 
-固定版本的 Git 形式：`github:Promise4ever/dsh-plugin-image-ocr#v0.2.0`。不要使用 GitHub 的 `/tree/…`、`/releases/tag/…` 网页、源码 ZIP 或带查询参数的安装包地址。
+固定版本的 Git 形式：`github:Promise4ever/dsh-plugin-image-ocr#v0.4.0`。不要使用 GitHub 的 `/tree/…`、`/releases/tag/…` 网页、源码 ZIP 或带查询参数的安装包地址。
 
 已运行中的 profile 若由终端管理，也可安装到实际使用的 profile，例如：
 
 ```sh
-dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image-ocr/releases/download/v0.2.0/dsh-plugin-image-ocr-0.2.0.tgz'
+dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image-ocr/releases/download/v0.4.0/dsh-plugin-image-ocr-0.4.0.tgz'
 ```
 
 将 `tauri` 换为实际 profile；不要盲目安装进另一个 `web` profile。全局 CLI 不接受 Desktop carrier 专用的 `desktop` profile，Desktop 用户请用应用内安装入口。
