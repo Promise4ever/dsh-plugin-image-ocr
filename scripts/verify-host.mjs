@@ -368,7 +368,7 @@ try {
     assert.equal(tool.parameters.type, 'object');
     assert.deepEqual(tool.parameters.required, ['image']);
     assert.equal(tool.parameters.properties.image.type, 'string');
-    assert.deepEqual(tool.parameters.properties.mode.enum, ['screen', 'document', 'raw']);
+    assert.deepEqual(tool.parameters.properties.mode.enum, ['auto', 'screen', 'document', 'raw']);
     assert.equal(tool.parameters.properties.pageRanges.type, 'string');
     assert.equal(tool.parameters.properties.refresh.type, 'boolean');
     assert.equal(tool.output.schema.type, 'string');

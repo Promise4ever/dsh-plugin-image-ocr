@@ -15,4 +15,7 @@ test('normalizeConfig validates ranges, default mode and the hint flag', () => {
   assert.throws(() => normalizeConfig({ hintOnReadImage: 'yes' }), TypeError);
   assert.throws(() => normalizeConfig({ mode: 'pdf' }), TypeError);
   assert.deepEqual(normalizeConfig({}), { ...DEFAULTS });
+  assert.equal(normalizeConfig({}).mode, 'auto');
+  assert.equal(normalizeConfig({ mode: 'auto' }).mode, 'auto');
+  assert.equal(normalizeConfig({ mode: 'raw' }).mode, 'raw');
 });

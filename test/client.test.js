@@ -277,3 +277,68 @@ test('transport failures normalize to a stable retriable code', () => {
   const controller = new AbortController(); controller.abort(new Error('cancelled'));
   assert.match(normalizeTransportError(new Error('ignored'), controller.signal).message, /cancelled/);
 });
+test('auto scene picks document for PDF and screen for images, and explicit mode wins', async t => {
+  const f = await fixture(t);
+  const pdf = Buffer.from('%PDF-1.7\n%synthetic');
+  await f.client.run(PNG, { refresh: true });
+  await f.client.run(pdf, { refresh: true });
+  await f.client.run(pdf, { refresh: true, mode: 'screen' });
+  const posts = f.calls.filter(call => call.method === 'POST').map(call => call.body.toString());
+  assert.equal(posts.length, 3);
+  assert.match(posts[0], /"useLayoutDetection":false/);
+  assert.match(posts[0], /filename="input.png"/);
+  assert.match(posts[1], /"useLayoutDetection":true/);
+  assert.match(posts[1], /filename="input.pdf"/);
+  assert.match(posts[2], /"useLayoutDetection":false/);
+});
+test('the deadline also covers credential resolution, so a stalled token resolver cannot hang a run', async t => {
+  const f = await fixture(t, { config: { timeoutMs: 5 }, resolveToken: () => new Promise(() => {}) });
+  const started = Date.now();
+  const guarded = Promise.race([f.client.run(PNG), new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('preparation ignored the deadline')), 2000))]);
+  await assert.rejects(guarded, error => error.name === 'TimeoutError' || error.code === 'CANCELLED');
+  assert.ok(Date.now() - started < 2000);
+  assert.equal(f.calls.length, 0);
+});
+test('a cancellation observed while reading the cache does not return a cached result', async t => {
+  const f = await fixture(t);
+  const key = cacheKey(PNG, { mode: 'screen', pageRanges: '', token: TOKEN, model: MODEL });
+  await fs.mkdir(f.config.cacheDir, { recursive: true });
+  await fs.writeFile(path.join(f.config.cacheDir, `${key}.json`),
+    JSON.stringify({ version: 4, savedAt: 1000000, text: 'cached', pages: 1 }));
+  const controller = new AbortController();
+  const fsp = (await import('node:fs/promises')).default;
+  const original = fsp.readFile;
+  fsp.readFile = async (file, ...rest) => {
+    const value = await original.call(fsp, file, ...rest);
+    if (typeof file === 'string' && file.endsWith(`${key}.json`)) controller.abort(new Error('cancelled during cache read'));
+    return value;
+  };
+  t.after(() => { fsp.readFile = original; });
+  await assert.rejects(f.client.run(PNG, { signal: controller.signal }), /cancelled/);
+  assert.equal(f.calls.length, 0);
+});
+test('retention sweeps expired cache entries and stale job checkpoints', async t => {
+  const f = await fixture(t);
+  await f.client.run(PNG);
+  const oldCache = path.join(f.config.cacheDir, 'expired-entry.json');
+  const oldCheckpoint = path.join(f.config.cacheDir, 'expired-job.job.json');
+  await fs.writeFile(oldCache, '{"version":4}');
+  await fs.writeFile(oldCheckpoint, '{"jobId":"old","savedAt":1}');
+  const old = new Date(Date.now() - 40 * 86400000);
+  await fs.utimes(oldCache, old, old);
+  await fs.utimes(oldCheckpoint, old, old);
+  await f.client.run(Buffer.concat([PNG, Buffer.from([1])]), { refresh: true });
+  await assert.rejects(fs.stat(oldCache), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(oldCheckpoint), { code: 'ENOENT' });
+});
+test('cacheTtlDays 0 reuses nothing and removes the entry it touched', async t => {
+  const first = await fixture(t);
+  await first.client.run(PNG);
+  const key = cacheKey(PNG, { mode: 'screen', pageRanges: '', token: TOKEN, model: MODEL });
+  const file = path.join(first.config.cacheDir, `${key}.json`);
+  assert.equal((await fs.stat(file)).isFile(), true);
+  const noCache = await fixture(t, { config: { cacheTtlDays: 0, cacheDir: first.config.cacheDir } });
+  assert.equal((await noCache.client.run(PNG)).cached, false);
+  await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+});

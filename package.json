@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-image-ocr",
-  "version": "0.3.0",
-  "description": "PaddleOCR-VL-1.6 and PP-OCRv6 image/PDF text fallback for DeepSeek Harness, with a built-in settings page for the aistudio token, model choice and recognition-format switches.",
+  "version": "0.4.0",
+  "description": "PaddleOCR-VL-1.6 and PP-OCRv6 image/PDF text fallback for DeepSeek Harness, with an automatic scene preset, a built-in settings page for the aistudio token, model choice and recognition-format switches.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

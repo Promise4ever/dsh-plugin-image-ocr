@@ -36,10 +36,10 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
 
 - **aistudio Access Token**：页面内给出获取步骤与入口（<https://aistudio.baidu.com/paddleocr/task> → 登录 → 「API 调用示例」复制 access token），输入框是只写字段，保存到 DSH 本机凭据库（`$DSH_HOME/.credentials.yaml`，引用名 `PADDLEOCR_MCP_AISTUDIO_ACCESS_TOKEN`），**不写进 profile 配置、不回显到页面**。可随时移除；环境变量与凭据文件仍作为后备。
 - **识别模型**：`PaddleOCR-VL-1.6`（文档/版面/表格/公式，默认）或 `PP-OCRv6`（轻量小模型，只输出文字行，速度快、无版面结构）。
-- **识别与格式**：默认识别场景（screen / document / raw）、结果格式（Markdown / 纯文本），以及方向矫正、扭曲矫正、版面分析、图表识别、印章识别、文本行方向矫正等格式开关（自动 / 开 / 关；自动跟随场景预设，模型不适用的开关不会下发）。
-- **性能、缓存与提示**：结果缓存天数、总超时、轮询间隔、读图后提示模型及其冷却时间、可选的凭据文件路径。
+- **识别与格式**：默认识别场景（自动 / screen / document / raw；自动会按文件类型选预设：PDF → 文档，图片 → 截图，工具显式传 `mode` 时以传参为准）、结果格式（Markdown / 纯文本），以及方向矫正、扭曲矫正、版面分析、图表识别、印章识别、文本行方向矫正等格式开关（自动 / 开 / 关；自动跟随场景预设，模型不适用的开关不会下发）。
+- **性能、缓存与提示**：结果缓存天数（过期条目会在下次读取或写入时清理，设为 0 则不再复用并清掉命中的旧条目）、总超时、轮询间隔、读图后提示模型及其冷却时间、可选的凭据文件路径。
 
-除 token 外的设置写入当前 profile 的 `cordis.patch.yml`；这些字段都声明为 volatile，保存后**下一次 OCR 调用立即生效**，无需重启宿主。token 通过凭据库单独保存，两者都不会把机密值带进设置文档。
+除 token 外的设置写入当前 profile 的 `cordis.patch.yml`；这些字段都声明为 volatile，保存后**下一次 OCR 调用立即生效**，无需重启宿主。token 通过本机凭据库单独保存：识别设置只作用于当前 profile，token 则在同一 DSH 安装下的 profile 之间共享，两者都不会把机密值带进设置文档。
 
 ## 本地凭据
 
@@ -63,7 +63,7 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
 参数：
 
 - `image`：本地图片或 PDF 的绝对路径，或相对于当前会话工作目录的路径。不能传 `attachmentId`，也不接受任意 URL。
-- `mode`：`screen`（默认，截图/UI/聊天记录，关闭版面切块）、`document`（扫描页、多栏、PDF，开启版面分析）、`raw`（服务端默认）。未显式传 `mode` 时使用设置页里的「默认识别场景」。
+- `mode`：`auto`（默认，按文件类型选：PDF → `document`，图片 → `screen`）、`screen`（截图/UI/聊天记录，关闭版面切块）、`document`（扫描页、多栏、PDF，开启版面分析）、`raw`（不发预设，交给服务端默认）。未显式传 `mode` 时使用设置页里的「默认识别场景」；显式传 `screen`/`document` 会覆盖自动判断。
 - 模型由设置页决定：默认 `PaddleOCR-VL-1.6`（Markdown 版面解析），可切换 `PP-OCRv6`（轻量小模型，返回文字行）。设置页还可调整结果格式（Markdown/纯文本）与各项格式矫正开关。
 - `pageRanges`：可选 PDF 页码，例如 `1-3,5`，从 1 开始。仅选择页码不会改变整文件上传这一事实。
 - `refresh`：`true` 跳过本地结果缓存与已保存任务，重新提交；不保证绕过云服务内部缓存。
@@ -77,10 +77,10 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
 - 默认总期限 300 秒，轮询间隔 2 秒。取消信号传入 HTTPS 与等待逻辑；取消本地等待不能保证停止已提交的云端任务，也不能撤回已上传数据。
 - 仅下载文字结果 JSONL，不下载结果图片，不把 API 凭据转发给对象存储。允许的结果 URL 为 HTTPS 的 `aistudio-app.com`、`bcebos.com`、`baidubce.com` 及子域；没有自动跳转或任意 URL 代理。
 - 单个插件实例按序提交，限流时有限退避重试。网络中断导致 POST 是否成功不明确时，不盲目重提，避免重复任务。
-- 本地缓存默认 30 天，键包含文件内容、模式参数、页码、模型版本和账号的摘要。目录 `$DSH_HOME/ocr-cache/` 保存 OCR 文字及临时任务 ID，不含凭据。临时任务可在次日以前续查；`refresh` 可主动重新提交。
+- 本地缓存默认 30 天，键包含文件内容、模式参数、页码、模型版本和账号的摘要。目录 `$DSH_HOME/ocr-cache/` 保存 OCR 文字及临时任务 ID，不含凭据。临时任务可在次日以前续查；`refresh` 可主动重新提交。过期条目与超过 24 小时的临时任务会在命中、写入或读取时被清理；缓存关闭（`cacheTtlDays: 0`）时识别成功也会清掉已有缓存条目。
 - 新文件通常仍需几十秒到数分钟，速度主要取决于云端排队和推理；本插件不能把 VL 推理保证为秒级。相同输入命中本地缓存时不重新上传。
 - OCR 可能漏字、错字、误识公式，关键数字应核对原文。OCR 内容是引用数据，不能作为新指令执行。
-- **所选整文件会上传百度 aistudio。涉密或未经授权的材料不要使用。** 结果文字也保存在本地缓存；按数据敏感性清理缓存目录。
+- **所选整文件会上传百度 aistudio。涉密或未经授权的材料不要使用。** 结果文字也保存在本地缓存；关闭缓存可阻止新条目写入并清理已有条目，仍建议按数据敏感性检查缓存目录。
 - 工具在文件读取成功后直接提交上传，**没有逐文件二次确认**。文件读取权限不等于云上传授权；需要强制确认时，请在宿主策略层用 pre-execute 拦截，而不是依赖文件沙箱。
 
 ## 可选配置
@@ -91,7 +91,7 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
 - id: dsh-plugin-image-ocr
   config:
     model: PaddleOCR-VL-1.6   # 或 PP-OCRv6（轻量小模型）
-    mode: screen
+    mode: auto                # auto / screen / document / raw
     outputFormat: markdown    # 或 text
     orientationClassify: auto # auto / on / off
     docUnwarping: auto
@@ -111,7 +111,7 @@ dsh plugin --profile tauri add 'https://github.com/Promise4ever/dsh-plugin-image
 
 关闭提示设 `hintOnReadImage: false`，工具仍可直接调用。`timeoutMs`、`pollIntervalMs`、`hintCooldownMs` 必须是整数毫秒（小数会被拒绝，因为 `AbortSignal.timeout` 不接受非整数）。
 
-`cacheTtlDays` 只控制**是否复用**已有结果，不是自动删除期限：过期条目只是不再命中，旧识别文字仍留在缓存目录里，需要时自行清理。`cacheTtlDays: 0` 不保存识别结果（仍暂存续查所需的任务 ID）。缓存和任务 ID 写入失败不会影响已完成的识别结果，只是下次无法复用。
+`cacheTtlDays` 是复用窗口，也是清理窗口：超过期限的条目不再命中，并会在本次识别读取或写入缓存时删除；设为 0 时不保存新结果，并在识别成功后清理已有缓存条目（续查所需的任务 ID 仍保留 24 小时）。缓存和任务 ID 写入失败不会影响已完成的识别结果，只是下次无法复用。
 
 ## V4 会话安全修复
 

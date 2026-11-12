@@ -11,5 +11,5 @@
       name: dsh-plugin-image-ocr
       config:
         model: PaddleOCR-VL-1.6
-        mode: screen
+        mode: auto
         hintOnReadImage: true

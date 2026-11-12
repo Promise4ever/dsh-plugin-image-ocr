@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOptionalPayload, buildMultipart, cacheKey, createClient, markdownToText,
-  parseResults } from '../lib/paddle-rest.js';
+import { AUTO_MODE, buildOptionalPayload, buildMultipart, cacheKey, createClient, markdownToText,
+  parseResults, resolveRunMode } from '../lib/paddle-rest.js';
 import { DEFAULTS, FORMAT_SWITCH_KEYS, normalizeConfig, unwrapConfig } from '../lib/config.js';
 
 const PNG = Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0]);
@@ -70,12 +70,27 @@ test('text output format strips Markdown decorations from VL pages', () => {
 test('normalizeConfig validates the new settings and fills defaults', () => {
   const normalized = normalizeConfig({});
   assert.equal(normalized.model, DEFAULTS.model);
+  assert.equal(normalized.mode, 'auto');
+  assert.equal(normalizeConfig({ mode: 'auto' }).mode, 'auto');
   assert.equal(normalized.outputFormat, 'markdown');
   for (const key of FORMAT_SWITCH_KEYS) assert.equal(normalized[key], 'auto');
   assert.throws(() => normalizeConfig({ model: 'bad model!' }), TypeError);
   assert.throws(() => normalizeConfig({ outputFormat: 'pdf' }), TypeError);
   assert.throws(() => normalizeConfig({ layoutDetection: 'yes' }), TypeError);
   assert.equal(normalizeConfig({ model: 'PP-OCRv6', chartRecognition: 'off' }).chartRecognition, 'off');
+});
+
+test('auto scene resolves from the media type and stays overridable', () => {
+  const pdf = Buffer.from('%PDF-1.7\n%synthetic');
+  assert.equal(AUTO_MODE, 'auto');
+  assert.equal(resolveRunMode(undefined, PNG), 'screen');
+  assert.equal(resolveRunMode('auto', PNG), 'screen');
+  assert.equal(resolveRunMode('auto', pdf), 'document');
+  assert.equal(resolveRunMode('screen', pdf), 'screen');
+  assert.equal(resolveRunMode('raw', pdf), 'raw');
+  assert.throws(() => resolveRunMode('unknown', PNG), { code: 'INVALID_MODE' });
+  // the resolved auto value feeds the preset builder like any explicit scene
+  assert.equal(buildOptionalPayload({ mode: resolveRunMode('auto', pdf) }).useLayoutDetection, true);
 });
 
 test('unwrapConfig follows volatile references and nested values', () => {

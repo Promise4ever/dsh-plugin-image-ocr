@@ -34,7 +34,7 @@ window.__ModuleLoader__.load({
     ];
     const CLIENT_DEFAULTS = {
       model: 'PaddleOCR-VL-1.6',
-      mode: 'screen',
+      mode: 'auto',
       outputFormat: 'markdown',
       orientationClassify: 'auto',
       docUnwarping: 'auto',
@@ -64,6 +64,7 @@ window.__ModuleLoader__.load({
       { key: 'sealRecognition', label: '印章识别', hint: '识别公章印章文字，常规文档无需开启。', families: ['vl'] },
     ];
     const MODES = [
+      { value: 'auto', label: '自动（推荐）', hint: '按文件类型自动选择：PDF 用文档预设，图片用截图预设。工具显式传 mode 时以传参为准。' },
       { value: 'screen', label: '截图 / 界面（screen）', hint: '关闭版面切块，适合聊天截图、软件界面、手机截图。' },
       { value: 'document', label: '文档 / 扫描页（document）', hint: '开启版面分析，适合扫描件、多栏文档、PDF。' },
       { value: 'raw', label: '服务端默认（raw）', hint: '只发模型与文件，全部解析参数交给服务端默认值。' },
@@ -166,9 +167,13 @@ window.__ModuleLoader__.load({
       try { current = form.getSnapshot() } catch { return }
       const status = (current && current.status) || 'loading';
       if (status !== 'ready' || !current.value) { publish({ formStatus: status }); return }
+      const previous = state.saved;
       const saved = pickValues(current.value);
-      const draft = state.dirty ? state.draft : saved;
-      publish({ formStatus: 'ready', saved, draft });
+      // Field-level rebase: keep only the fields the user actually edited; untouched fields
+      // follow the newly saved values so a later save cannot write back a stale value.
+      const draft = {};
+      for (const key of CONFIG_KEYS) draft[key] = state.dirty && !eq(state.draft[key], previous[key]) ? state.draft[key] : saved[key];
+      publish({ formStatus: 'ready', saved, draft, dirty: CONFIG_KEYS.some((key) => !eq(draft[key], saved[key])) });
     }
     function bindFormWithRetry(ctx, attempt) {
       if (disposed || form !== null) return;
@@ -260,16 +265,23 @@ window.__ModuleLoader__.load({
       publish({ draft, dirty, saveMessage: '', saveError: '' });
     }
     function resetDraft() {
-      publish({ draft: { ...CLIENT_DEFAULTS }, dirty: true, saveMessage: '', saveError: '' });
+      const draft = { ...CLIENT_DEFAULTS };
+      const dirty = CONFIG_KEYS.some((key) => !eq(draft[key], state.saved[key]));
+      publish({ draft, dirty, saveMessage: dirty ? '' : '当前设置已经是默认值。', saveError: '' });
     }
     async function saveAll() {
       if (!form) { publish({ saveError: '设置服务尚未连接，无法保存。稍等片刻再试。' }); return }
+      if (state.saving) return;
+      const submitted = {};
       const ops = [];
       for (const key of CONFIG_KEYS) {
+        submitted[key] = state.draft[key];
         if (!eq(state.draft[key], state.saved[key])) ops.push({ op: 'set', path: [key], value: state.draft[key] });
       }
-      if (ops.length === 0) { publish({ saveMessage: '当前没有需要保存的改动。', saveError: '' }); return }
-      if (state.saving) return;
+      if (ops.length === 0) {
+        publish({ dirty: false, saveMessage: '当前没有需要保存的改动。', saveError: '' });
+        return;
+      }
       publish({ saving: true, saveMessage: '', saveError: '' });
       try {
         const accepted = await form.mutate(ops);
@@ -277,7 +289,24 @@ window.__ModuleLoader__.load({
           publish({ saving: false, saveError: '宿主拒绝了这次写入（字段不可写或版本冲突），请刷新设置页后重试。' });
           return;
         }
-        publish({ saving: false, dirty: false, saveMessage: `已保存 ${ops.length} 项设置，下一次 OCR 调用立即生效。` });
+        // The write may have taken a while. Rebuild `saved` from the form when possible and keep
+        // edits made during the save dirty instead of claiming they were written.
+        let saved = { ...state.saved, ...submitted };
+        try {
+          const current = form.getSnapshot();
+          if (current && current.status === 'ready' && current.value) {
+            const fresh = pickValues(current.value);
+            // Only trust a snapshot that already reflects this write; a snapshot published a
+            // tick late would otherwise make a successful save look dirty again.
+            if (CONFIG_KEYS.every((key) => eq(fresh[key], submitted[key]))) saved = fresh;
+          }
+        } catch { /* keep the local merge */ }
+        const draft = {};
+        for (const key of CONFIG_KEYS) draft[key] = eq(state.draft[key], submitted[key]) ? saved[key] : state.draft[key];
+        const dirty = CONFIG_KEYS.some((key) => !eq(draft[key], saved[key]));
+        publish({ saving: false, saved, draft, dirty, saveMessage: dirty
+          ? `已保存 ${ops.length} 项设置；保存期间的新改动尚未写入。`
+          : `已保存 ${ops.length} 项设置，下一次 OCR 调用立即生效。` });
       } catch (error) {
         publish({ saving: false, saveError: String((error && error.message) || error) });
       }
@@ -376,7 +405,7 @@ window.__ModuleLoader__.load({
           h('h4', { key: 't', style: styles.cardTitle }, 'aistudio Access Token'),
           badge,
         ]),
-        h('p', { key: 'sub', style: styles.cardSub }, 'OCR 使用百度 AI Studio 的 PaddleOCR 服务，需要一个 access token。token 只保存在本机凭据库，不写进 profile 配置，也不会回显到页面。'),
+        h('p', { key: 'sub', style: styles.cardSub }, 'OCR 使用百度 AI Studio 的 PaddleOCR 服务，需要一个 access token。token 只保存在本机凭据库（同一 DSH 安装下的 profile 共享），不写进 profile 配置，也不会回显到页面。'),
         h('ol', { key: 'steps', style: styles.steps }, [
           h('li', { key: 's1' }, '打开 ', h('a', { href: TOKEN_URL, target: '_blank', rel: 'noreferrer', style: styles.link }, 'PaddleOCR 任务页'), '，登录百度账号。'),
           h('li', { key: 's2' }, '在页面的「API 调用示例」区域复制 access token（一串很长的字符）。'),
@@ -444,7 +473,7 @@ window.__ModuleLoader__.load({
         h(Row, { key: 'mode', label: '默认识别场景', hint: '工具调用未显式传 mode 时使用。' },
           h(Select, { value: snap.draft.mode, options: MODES.map((item) => ({ value: item.value, label: item.label })),
             onChange: (value) => patchDraft('mode', value) })),
-        h(Row, { key: 'out', label: '结果格式', hint: family === 'ocr' ? 'PP-OCR 只返回文字行，此选项仅影响 VL 的 Markdown 装饰。' : 'markdown 保留版面结构；text 去掉 Markdown 装饰。' },
+        h(Row, { key: 'out', label: '结果格式', hint: family === 'ocr' ? 'PP-OCR 只返回文字行：text 用空行分隔多页，markdown 用分隔线；不影响识别的文字。' : 'markdown 保留版面结构；text 去掉 Markdown 装饰。' },
           h(Select, { value: snap.draft.outputFormat, options: [{ value: 'markdown', label: 'Markdown' }, { value: 'text', label: '纯文本' }],
             onChange: (value) => patchDraft('outputFormat', value) })),
         h('div', { key: 'divider', style: { ...styles.cardSub, marginTop: '2px' } }, '高级格式开关（VL 与 PP-OCR 适用项不同）'),
@@ -466,7 +495,7 @@ window.__ModuleLoader__.load({
           } }));
       return h('section', { style: styles.card, 'data-ocr-panel': 'advanced' }, [
         h('h4', { key: 't', style: styles.cardTitle }, '性能、缓存与提示'),
-        numberRow('cacheTtlDays', '结果缓存', '天；0 表示不复用本地缓存。', snap.draft.cacheTtlDays,
+        numberRow('cacheTtlDays', '结果缓存', '天；0 表示不复用本地缓存。过期的缓存文件会在下次识别时清理。', snap.draft.cacheTtlDays,
           (value) => patchDraft('cacheTtlDays', value), 0, 365),
         numberRow('timeoutMs', '总超时', '秒；包含排队、识别与下载结果。', Math.round(snap.draft.timeoutMs / 1000),
           (value) => patchDraft('timeoutMs', value * 1000), 1, 3600),
@@ -482,7 +511,7 @@ window.__ModuleLoader__.load({
           h('input', { type: 'text', value: snap.draft.tokenFile, placeholder: '例如 D:\private\ocr-token.txt',
             style: { ...styles.input, minWidth: '240px' },
             onChange: (event) => patchDraft('tokenFile', event.target.value) })),
-        h('p', { key: 'note', style: styles.cardSub }, '这些设置会写入当前 profile 的 cordis.patch.yml；token 不在此列。'),
+        h('p', { key: 'note', style: styles.cardSub }, '这些设置会写入当前 profile 的 cordis.patch.yml；token 不在此列，改 token 请用上方「aistudio Access Token」。'),
       ]);
     }
 
@@ -499,7 +528,7 @@ window.__ModuleLoader__.load({
       return h('div', { style: styles.page, 'data-ocr-settings': '' }, [
         h('div', { key: 'head' }, [
           h('h3', { key: 't', style: styles.title }, '图片文字识别'),
-          h('p', { key: 'i', style: styles.intro }, 'read_image_text 工具的凭据、模型与识别格式设置。设置只作用于本机当前 profile。'),
+          h('p', { key: 'i', style: styles.intro }, 'read_image_text 工具的凭据、模型与识别格式设置。识别设置只作用于当前 profile；token 存放在本机凭据库，同一 DSH 安装下共享。'),
         ]),
         h('div', { key: 'status', style: styles.stat }, [
           ready ? h(Badge, { key: 'b', tone: 'ok' }, '设置服务已连接') : h(Badge, { key: 'b', tone: 'warn' }, '设置服务未就绪'),
@@ -563,6 +592,14 @@ window.__ModuleLoader__.load({
       name: 'dsh-plugin-image-ocr',
       inject: ['slots', 'remote', 'remote.credentials', 'configForms'],
       apply,
+      /** Internal seam for regression tests; not a public API. */
+      __test: {
+        snapshot: () => snapshot,
+        patchDraft,
+        resetDraft,
+        saveAll,
+        syncFromForm,
+      },
     };
   },
 });

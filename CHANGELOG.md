@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.0
+
+- Add the automatic scene preset (`mode: auto`, now the default): PDFs use the document
+  preset and images use the screenshot preset, resolved locally from the sniffed media type.
+  An explicit `mode` argument (tools) or setting always overrides it; `raw` still sends no
+  preset. Cache version bumped so earlier entries are ignored.
+- Fix settings-page save races: edits made while a save is in flight stay dirty instead of
+  being reported as saved, and external updates rebase only the fields the user did not edit,
+  so the next save can no longer write back stale values. `恢复默认` no longer marks an
+  already-default draft as unsaved.
+- Fix cancellation and deadline handling during preparation: credential resolution, cache
+  lookup and checkpoint reads now honor the configured timeout and external abort, and a
+  cancelled call can no longer return a cached result.
+- Cache retention is enforced: expired entries are deleted when read or written, and
+  `cacheTtlDays: 0` removes cached entries it touches; resumable job checkpoints expire after
+  24 hours.
+- Clarify that the token lives in the local credential store and is shared across profiles of
+  the same DSH installation, while recognition settings stay per profile.
+- Tests: regression coverage for the page state machine (real bundle evaluated in a vm), the
+  auto scene resolution, preparation-time cancellation and cache retention.
+
 ## 0.3.0
 
 - Add a browser-half settings page registered into the DSH settings panel ("图片文字识别"):
