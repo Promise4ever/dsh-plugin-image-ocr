@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1
+
+- Declare compatibility with DSH 0.2.2 release candidates, including RC.4.
+- Isolate the unit suite (including prepack checks) from the user's OCR cache.
+- Preserve edits made while saving settings, even when the user reverts a submitted field to its prior value.
+- Recheck the result cache on queue admission to avoid duplicate uploads on concurrent cache misses.
+- Honor cancellation during local persistence and advance cache cleanup across batches of expired entries.
+
 ## 0.4.0
 
 - Add the automatic scene preset (`mode: auto`, now the default): PDFs use the document

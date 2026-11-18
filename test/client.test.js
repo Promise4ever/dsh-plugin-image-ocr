@@ -3,12 +3,35 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createClient, resolveToken, normalizePageRanges, mediaType, buildMultipart, cacheKey,
   parseResults, validateResultUrl, normalizeTransportError, OcrError, MODEL } from '../lib/paddle-rest.js';
 const PNG = Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0]);
 const TOKEN = 'synthetic-test-credential';
 const row = text => JSON.stringify({ result: { layoutParsingResults: [{ markdown: { text, images: { unused: 'https://never.invalid/image.png' } } }] } });
 const resultUrl = 'https://ocr-test.bcebos.com/result.jsonl?signature=synthetic';
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+async function within(promise, message) {
+  const controller = new AbortController();
+  try {
+    return await Promise.race([promise, delay(3000, undefined, { signal: controller.signal }).then(() => assert.fail(message))]);
+  } finally {
+    controller.abort();
+  }
+}
+async function waitForRemoval(file) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    try { await fs.lstat(file); }
+    catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    await delay(10);
+  }
+  assert.fail(`Prune did not remove ${path.basename(file)}`);
+}
 async function fixture(t, options = {}) {
   const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-ocr-test-'));
   t.after(() => fs.rm(cacheDir, { recursive: true, force: true }));
@@ -103,6 +126,33 @@ test('repeat invocation uses local cache with no network; refresh submits again'
   assert.equal((await client.run(PNG, { refresh: true })).cached, false);
   assert.equal(calls.length, 6);
 });
+test('a queued same-key miss rechecks the cache before submitting', async t => {
+  const polling = deferred(), release = deferred(), secondRead = deferred();
+  const f = await fixture(t, { send: async (url, req) => {
+    if (req.method === 'POST') return { status: 200, text: '{"data":{"jobId":"queued-job"}}' };
+    if (url === resultUrl) return { status: 200, text: row('one result') };
+    polling.resolve();
+    await release.promise;
+    return { status: 200, text: JSON.stringify({ data: { state: 'done', resultUrl: { jsonUrl: resultUrl } } }) };
+  } });
+  const key = cacheKey(PNG, { token: TOKEN });
+  const cacheFile = path.join(f.config.cacheDir, `${key}.json`);
+  const original = fs.readFile;
+  t.mock.method(fs, 'readFile', async (file, ...rest) => {
+    try { return await original(file, ...rest); }
+    catch (error) { if (file === cacheFile && f.calls.length === 2) secondRead.resolve(); throw error; }
+  });
+  const first = f.client.run(PNG);
+  try {
+    await within(polling.promise, 'first run never started polling');
+    const second = f.client.run(PNG);
+    await within(secondRead.promise, 'second run never checked the cache while the first was active');
+    release.resolve();
+    assert.equal((await first).cached, false);
+    assert.equal((await second).cached, true);
+    assert.equal(f.calls.filter(call => call.method === 'POST').length, 1);
+  } finally { release.resolve(); }
+});
 test('expired and corrupted caches are ignored', async t => {
   const { client, calls, config, advance } = await fixture(t);
   await client.run(PNG); advance(31 * 86400000);
@@ -177,7 +227,8 @@ test('cancellation saves a job checkpoint; retry resumes instead of re-submittin
       return { status: 200, text: JSON.stringify({ data: { state: first ? 'running' : 'done', resultUrl: { jsonUrl: resultUrl } } }) };
     } });
   await assert.rejects(f.client.run(PNG, { signal: controller.signal }), /cancelled/);
-  assert.equal((await fs.readdir(f.config.cacheDir)).filter(name => name.endsWith('.job.json')).length, 1);
+  // The next call waits for the accepted job's checkpoint even though
+  // cancellation itself does not wait for storage.
   assert.equal((await f.client.run(PNG)).text, 'resumed');
   assert.equal(f.calls.filter(call => call.method === 'POST').length, 1);
 });
@@ -318,19 +369,95 @@ test('a cancellation observed while reading the cache does not return a cached r
   await assert.rejects(f.client.run(PNG, { signal: controller.signal }), /cancelled/);
   assert.equal(f.calls.length, 0);
 });
-test('retention sweeps expired cache entries and stale job checkpoints', async t => {
+test('retention on a cache hit removes only expired regular files with generated names', async t => {
   const f = await fixture(t);
-  await f.client.run(PNG);
-  const oldCache = path.join(f.config.cacheDir, 'expired-entry.json');
-  const oldCheckpoint = path.join(f.config.cacheDir, 'expired-job.job.json');
-  await fs.writeFile(oldCache, '{"version":4}');
-  await fs.writeFile(oldCheckpoint, '{"jobId":"old","savedAt":1}');
+  const file = name => path.join(f.config.cacheDir, name);
+  const cache = file(`${cacheKey(PNG, { token: TOKEN })}.json`);
+  await fs.writeFile(cache, JSON.stringify({ version: 4, savedAt: 1000000, text: 'cached', pages: 1 }));
+  const expired = [file(`${'a'.repeat(64)}.json`), file(`${'b'.repeat(64)}.job.json`)];
+  const unrelated = [file('expired-entry.json'), file('expired-job.job.json'), file(`${'c'.repeat(63)}.json`),
+    file(`${'d'.repeat(65)}.json`), file(`${'e'.repeat(64)}.json.tmp`)];
   const old = new Date(Date.now() - 40 * 86400000);
-  await fs.utimes(oldCache, old, old);
-  await fs.utimes(oldCheckpoint, old, old);
-  await f.client.run(Buffer.concat([PNG, Buffer.from([1])]), { refresh: true });
-  await assert.rejects(fs.stat(oldCache), { code: 'ENOENT' });
-  await assert.rejects(fs.stat(oldCheckpoint), { code: 'ENOENT' });
+  for (const entry of [...expired, ...unrelated]) {
+    await fs.writeFile(entry, '{}');
+    await fs.utimes(entry, old, old);
+  }
+  const directory = file(`${'f'.repeat(64)}.json`);
+  await fs.mkdir(directory);
+  await fs.utimes(directory, old, old);
+  const recentCheckpoint = file(`${'a'.repeat(64)}.job.json`);
+  await fs.writeFile(recentCheckpoint, '{}');
+  assert.equal((await f.client.run(PNG)).cached, true);
+  await Promise.all(expired.map(waitForRemoval));
+  for (const entry of [cache, recentCheckpoint, ...unrelated]) assert.equal((await fs.lstat(entry)).isFile(), true);
+  assert.equal((await fs.lstat(directory)).isDirectory(), true);
+  assert.equal(f.calls.length, 0);
+});
+test('retention advances past a full batch even when OCR attempts fail', async t => {
+  const f = await fixture(t, { send: async () => ({ status: 401, text: '{}' }) });
+  const dir = f.config.cacheDir;
+  await Promise.all(Array.from({ length: 400 }, (_, i) => fs.writeFile(path.join(dir, `${i.toString(16).padStart(64, '0')}.json`), '{}')));
+  const expired = path.join(dir, `${'f'.repeat(64)}.json`);
+  const old = new Date(Date.now() - 40 * 86400000);
+  await fs.writeFile(expired, '{}');
+  await fs.utimes(expired, old, old);
+  const firstBatch = deferred();
+  const firstBatchLast = path.join(dir, `${(399).toString(16).padStart(64, '0')}.json`);
+  const lstat = fs.lstat;
+  t.mock.method(fs, 'lstat', async (file, ...rest) => {
+    const info = await lstat(file, ...rest);
+    if (file === firstBatchLast) firstBatch.resolve();
+    return info;
+  });
+  await assert.rejects(f.client.run(PNG), { code: 'AUTH_FAILED' });
+  await within(firstBatch.promise, 'first failed run did not trigger a maintenance batch');
+  assert.equal((await fs.stat(expired)).isFile(), true);
+  await assert.rejects(f.client.run(PNG), { code: 'AUTH_FAILED' });
+  await waitForRemoval(expired);
+});
+test('cancellation during result persistence returns promptly without blocking other keys', async t => {
+  const f = await fixture(t);
+  const key = cacheKey(PNG, { token: TOKEN });
+  const cacheFile = path.join(f.config.cacheDir, `${key}.json`);
+  const saving = deferred(), release = deferred();
+  const rename = fs.rename;
+  t.mock.method(fs, 'rename', async (from, to) => {
+    if (to === cacheFile) { saving.resolve(); await release.promise; }
+    return rename(from, to);
+  });
+  const controller = new AbortController();
+  const first = f.client.run(PNG, { signal: controller.signal });
+  try {
+    await within(saving.promise, 'first run did not reach result persistence');
+    controller.abort(new Error('cancelled during persistence'));
+    await within(assert.rejects(first, /cancelled during persistence/), 'caller waited for a blocked write');
+    const same = f.client.run(PNG);
+    const other = f.client.run(Buffer.concat([PNG, Buffer.from([9])]));
+    assert.equal((await within(other, 'unrelated key was blocked by persistence')).cached, false);
+    release.resolve();
+    assert.equal((await same).cached, true);
+    assert.equal((await fs.readdir(f.config.cacheDir)).some(name => name.endsWith('.job.json')), false);
+    assert.equal(f.calls.filter(call => call.method === 'POST').length, 2);
+  } finally { release.resolve(); }
+});
+test('an active deadline returns before delayed transport; an accepted POST can still resume', async t => {
+  const posting = deferred(), release = deferred();
+  const f = await fixture(t, { config: { timeoutMs: 500 }, send: async (url, req) => {
+    if (req.method === 'POST') { posting.resolve(); await release.promise; return { status: 200, text: '{"data":{"jobId":"accepted-job"}}' }; }
+    if (url === resultUrl) return { status: 200, text: row('resumed result') };
+    return { status: 200, text: JSON.stringify({ data: { state: 'done', resultUrl: { jsonUrl: resultUrl } } }) };
+  } });
+  const first = f.client.run(PNG);
+  const rejects = assert.rejects(first, { name: 'TimeoutError' });
+  try {
+    await within(posting.promise, 'first run did not reach POST');
+    await within(rejects, 'active run ignored its deadline');
+    f.config.timeoutMs = 10000;
+    const second = f.client.run(PNG);
+    release.resolve();
+    assert.equal((await second).jobId, 'accepted-job');
+    assert.equal(f.calls.filter(call => call.method === 'POST').length, 1);
+  } finally { release.resolve(); }
 });
 test('cacheTtlDays 0 reuses nothing and removes the entry it touched', async t => {
   const first = await fixture(t);

@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { AUTO_MODE, buildOptionalPayload, buildMultipart, cacheKey, createClient, markdownToText,
   parseResults, resolveRunMode } from '../lib/paddle-rest.js';
 import { DEFAULTS, FORMAT_SWITCH_KEYS, normalizeConfig, unwrapConfig } from '../lib/config.js';
@@ -99,10 +102,12 @@ test('unwrapConfig follows volatile references and nested values', () => {
     { model: 'PP-OCRv6', nest: { mode: 'document' }, n: 3 });
 });
 
-test('createClient reads a live config getter between runs', async () => {
+test('createClient reads a live config getter between runs', async t => {
+  const cacheDir = await mkdtemp(join(tmpdir(), 'dsh-ocr-format-'));
+  t.after(() => rm(cacheDir, { recursive: true, force: true }));
   const calls = [];
   let model = 'PaddleOCR-VL-1.6';
-  const client = createClient(() => ({ token: TOKEN, timeoutMs: 5000, cacheTtlDays: 0, model }),
+  const client = createClient(() => ({ token: TOKEN, timeoutMs: 5000, cacheTtlDays: 0, cacheDir, model }),
     { resolveToken: async () => TOKEN, sleep: async () => {}, now: () => 1000,
       request: async (url, req) => {
         calls.push({ url, req });

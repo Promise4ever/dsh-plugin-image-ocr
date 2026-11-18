@@ -115,6 +115,7 @@ window.__ModuleLoader__.load({
 
     /* ---------- config form plumbing ---------- */
     let form = null;
+    let pendingSave = null;
     let formSubscription = null;
     let formTimer = null;
     let boundCtx = null;
@@ -172,7 +173,11 @@ window.__ModuleLoader__.load({
       // Field-level rebase: keep only the fields the user actually edited; untouched fields
       // follow the newly saved values so a later save cannot write back a stale value.
       const draft = {};
-      for (const key of CONFIG_KEYS) draft[key] = state.dirty && !eq(state.draft[key], previous[key]) ? state.draft[key] : saved[key];
+      for (const key of CONFIG_KEYS) {
+        // A post-submit revert can equal the old saved value until the in-flight write lands.
+        const keepEdit = pendingSave?.edited.has(key) || !eq(state.draft[key], previous[key]);
+        draft[key] = keepEdit ? state.draft[key] : saved[key];
+      }
       publish({ formStatus: 'ready', saved, draft, dirty: CONFIG_KEYS.some((key) => !eq(draft[key], saved[key])) });
     }
     function bindFormWithRetry(ctx, attempt) {
@@ -258,56 +263,66 @@ window.__ModuleLoader__.load({
     }
 
     /* ---------- config writes ---------- */
+    function updateDraft(draft, cleanMessage = '') {
+      if (pendingSave) {
+        for (const key of pendingSave.submitted.keys()) {
+          if (!eq(draft[key], state.draft[key])) pendingSave.edited.add(key);
+        }
+      }
+      const dirty = CONFIG_KEYS.some((key) => !eq(draft[key], state.saved[key]));
+      publish({ draft, dirty, saveMessage: dirty ? '' : cleanMessage, saveError: '' });
+    }
     function patchDraft(key, value) {
-      const draft = { ...state.draft, [key]: value };
-      let dirty = false;
-      for (const field of CONFIG_KEYS) if (!eq(draft[field], state.saved[field])) { dirty = true; break }
-      publish({ draft, dirty, saveMessage: '', saveError: '' });
+      updateDraft({ ...state.draft, [key]: value });
     }
     function resetDraft() {
-      const draft = { ...CLIENT_DEFAULTS };
-      const dirty = CONFIG_KEYS.some((key) => !eq(draft[key], state.saved[key]));
-      publish({ draft, dirty, saveMessage: dirty ? '' : '当前设置已经是默认值。', saveError: '' });
+      updateDraft({ ...CLIENT_DEFAULTS }, '当前设置已经是默认值。');
     }
     async function saveAll() {
       if (!form) { publish({ saveError: '设置服务尚未连接，无法保存。稍等片刻再试。' }); return }
       if (state.saving) return;
-      const submitted = {};
-      const ops = [];
+      const submitted = new Map();
       for (const key of CONFIG_KEYS) {
-        submitted[key] = state.draft[key];
-        if (!eq(state.draft[key], state.saved[key])) ops.push({ op: 'set', path: [key], value: state.draft[key] });
+        if (!eq(state.draft[key], state.saved[key])) submitted.set(key, state.draft[key]);
       }
-      if (ops.length === 0) {
+      if (submitted.size === 0) {
         publish({ dirty: false, saveMessage: '当前没有需要保存的改动。', saveError: '' });
         return;
       }
+      const ops = [...submitted].map(([key, value]) => ({ op: 'set', path: [key], value }));
+      const edited = new Set();
+      pendingSave = { submitted, edited };
       publish({ saving: true, saveMessage: '', saveError: '' });
       try {
         const accepted = await form.mutate(ops);
         if (accepted === false) {
+          pendingSave = null;
           publish({ saving: false, saveError: '宿主拒绝了这次写入（字段不可写或版本冲突），请刷新设置页后重试。' });
           return;
         }
-        // The write may have taken a while. Rebuild `saved` from the form when possible and keep
-        // edits made during the save dirty instead of claiming they were written.
-        let saved = { ...state.saved, ...submitted };
+        // A lagging snapshot may not reflect the accepted write yet. In that case, merge only
+        // the submitted fields onto the latest subscribed state, never the whole original draft.
+        let saved = { ...state.saved };
+        for (const [key, value] of submitted) saved[key] = value;
         try {
           const current = form.getSnapshot();
           if (current && current.status === 'ready' && current.value) {
             const fresh = pickValues(current.value);
-            // Only trust a snapshot that already reflects this write; a snapshot published a
-            // tick late would otherwise make a successful save look dirty again.
-            if (CONFIG_KEYS.every((key) => eq(fresh[key], submitted[key]))) saved = fresh;
+            if (ops.every(({ path: [key], value }) => eq(fresh[key], value))) saved = fresh;
           }
         } catch { /* keep the local merge */ }
         const draft = {};
-        for (const key of CONFIG_KEYS) draft[key] = eq(state.draft[key], submitted[key]) ? saved[key] : state.draft[key];
+        for (const key of CONFIG_KEYS) {
+          const keepEdit = submitted.has(key) ? edited.has(key) : !eq(state.draft[key], state.saved[key]);
+          draft[key] = keepEdit ? state.draft[key] : saved[key];
+        }
         const dirty = CONFIG_KEYS.some((key) => !eq(draft[key], saved[key]));
+        pendingSave = null;
         publish({ saving: false, saved, draft, dirty, saveMessage: dirty
           ? `已保存 ${ops.length} 项设置；保存期间的新改动尚未写入。`
           : `已保存 ${ops.length} 项设置，下一次 OCR 调用立即生效。` });
       } catch (error) {
+        pendingSave = null;
         publish({ saving: false, saveError: String((error && error.message) || error) });
       }
     }
